@@ -134,8 +134,10 @@ local fcd = (typeof(fireclickdetector) == "function") and fireclickdetector or n
 local gcon = (typeof(getconnections) == "function") and getconnections or nil
 local fsig = (typeof(firesignal) == "function") and firesignal or nil
 
--- coba tombol "Reset" di UI game dulu sebelum portal
--- (game menampilkan: "Klik Reset, kembali ke base!")
+-- cara utama reset checkpoint: RemoteEvent ReplicatedStorage.ResetCheckpoint
+local useResetRemote = true
+
+-- cadangan kalau remote gagal: tombol "Reset" di UI game, lalu portal
 local useResetButton = true
 
 local gui = nil               -- diisi di bagian GUI
@@ -1196,8 +1198,54 @@ local function tryResetButton(myId, cpBefore)
     return false, "Reset ditekan, CP tidak turun"
 end
 
+-- cara utama: ReplicatedStorage.ResetCheckpoint:FireServer()
+local function tryResetRemote(myId, cpBefore)
+
+    setInfo("Reset checkpoint (remote)...")
+
+    local remote = nil
+
+    pcall(function()
+        remote = game:GetService("ReplicatedStorage"):WaitForChild("ResetCheckpoint", 3)
+    end)
+
+    if not remote then
+        return false, "remote ResetCheckpoint tidak ketemu"
+    end
+
+    local ok, err = pcall(function()
+
+        if remote:IsA("RemoteFunction") then
+
+            task.spawn(function()
+                pcall(function()
+                    remote:InvokeServer()
+                end)
+            end)
+
+        else
+            remote:FireServer()
+        end
+    end)
+
+    if not ok then
+        return false, "gagal panggil remote: " .. tostring(err)
+    end
+
+    if waitForResetResult(myId, cpBefore, nil, 8) then
+        return true
+    end
+
+    -- leaderstats tidak terbaca: tidak bisa diverifikasi, anggap berhasil
+    if cpBefore == nil or cpBefore <= 0 then
+        return true
+    end
+
+    return false, "remote dipanggil, CP tidak turun"
+end
+
 --==================================================
--- RESET: TOMBOL RESET -> PORTAL
+-- RESET: REMOTE -> TOMBOL RESET -> PORTAL
 --==================================================
 
 local function doPortalReset(myId)
@@ -1206,7 +1254,23 @@ local function doPortalReset(myId)
     local foundAny = false
     local reasons = {}
 
-    -- 1) tombol Reset di UI game
+    -- 1) RemoteEvent ResetCheckpoint (cara utama)
+    if useResetRemote then
+
+        local ok, why = tryResetRemote(myId, cpBefore)
+
+        if ok then
+            return true
+        end
+
+        if not alive(myId) then
+            return false
+        end
+
+        reasons[#reasons + 1] = why
+    end
+
+    -- 2) tombol Reset di UI game
     if useResetButton then
 
         local ok, why = tryResetButton(myId, cpBefore)
@@ -1222,7 +1286,7 @@ local function doPortalReset(myId)
         reasons[#reasons + 1] = why
     end
 
-    -- 2) portal "KEMBALI KE BASE"
+    -- 3) portal "KEMBALI KE BASE"
     for attempt = 1, portalRetry do
 
         if not alive(myId) then
@@ -1347,6 +1411,7 @@ local function startTeleport()
 
     local retries = 0
     local stage = "-"
+    local forceStart = false     -- true = langkah berikutnya mulai dari CP1 (habis reset)
 
     -- satu putaran logika (dijalankan lewat xpcall, error tampil di GUI + nama tahap)
     local function step()
@@ -1354,6 +1419,14 @@ local function startTeleport()
         stage = "baca CP"
 
         local currentCP, source, avatarCP = getEffectiveCP()
+
+        -- habis reset: mulai dari CP1 (leaderstats bisa telat update)
+        if forceStart then
+            forceStart = false
+            currentCP = 0
+            avatarCP = nil
+        end
+
         local expected = currentCP + 1
 
         --==========================================
@@ -1423,9 +1496,21 @@ local function startTeleport()
 
             forcedCP = 0
             retries = 0
+            forceStart = true
 
-            setInfo("Reset OK, mulai lagi dari awal")
-            task.wait(1.5)
+            setInfo("Reset OK, ke base...")
+            task.wait(1)
+
+            -- kalau game tidak memindahkan avatar ke base, pindahkan sendiri
+            if alive(myId) and getAvatarCP() ~= 0 then
+
+                stage = "ke base"
+
+                teleportTo(baseData[2], baseData[3], baseData[4])
+                task.wait(delayTime)
+            end
+
+            setInfo("Mulai lagi dari awal")
 
         else
 
